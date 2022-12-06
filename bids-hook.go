@@ -4,10 +4,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,6 +21,10 @@ var (
 
 	// secret used to authenticate api calls from Gitea to bids-hook
 	bidsHookSecret = []byte("blabla")
+
+	// json field validation patterns
+	fullnamePattern = regexp.MustCompile(`^([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+)$`)
+	commitPattern   = regexp.MustCompile(`^([0-9a-f]{40})$`)
 )
 
 func urlMustParse(rawURL string) *url.URL {
@@ -114,8 +120,39 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// done with validation
-	log.Println("postHandler: got request")
+	// done with validation, now extract json fields
+	// json structure taken from gitea/modules/structs/{hook,repo}.go
+	var pushPayload struct {
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+		HeadCommit struct {
+			ID string `json:"id"`
+		} `json:"head_commit"`
+	}
+	err = json.Unmarshal(body, &pushPayload)
+	if err != nil {
+		log.Printf("postHandler: json error: %v", err)
+		http.Error(w, "400 bad json", http.StatusBadRequest)
+		return
+	}
+	match := fullnamePattern.FindStringSubmatch(pushPayload.Repo.FullName)
+	if match == nil || match[1] == "." || match[1] == ".." || match[2] == "." || match[2] == ".." {
+		log.Print("postHandler: bad repository.full_name")
+		http.Error(w, "400 bad repository.full_name", http.StatusBadRequest)
+		return
+	}
+	user := match[1]
+	repo := match[2]
+	match = commitPattern.FindStringSubmatch(pushPayload.HeadCommit.ID)
+	if match == nil {
+		log.Print("postHandler: bad head_commit.id")
+		http.Error(w, "400 bad head_commit.id", http.StatusBadRequest)
+		return
+	}
+	commit := match[1]
+
+	log.Printf("postHandler: got request %q %q %q", user, repo, commit)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
 }
