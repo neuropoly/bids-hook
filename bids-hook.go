@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/google/uuid"
 	"io"
 	"log"
 	"net/http"
@@ -120,7 +121,10 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// done with validation, now extract json fields
+	// done with validation, now construct a job
+	var job job
+
+	// extract json fields from the request body
 	// json structure taken from gitea/modules/structs/{hook,repo}.go
 	var pushPayload struct {
 		Repo struct {
@@ -142,17 +146,36 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "400 bad repository.full_name", http.StatusBadRequest)
 		return
 	}
-	user := match[1]
-	repo := match[2]
+	job.user = match[1]
+	job.repo = match[2]
 	match = commitPattern.FindStringSubmatch(pushPayload.HeadCommit.ID)
 	if match == nil {
 		log.Print("postHandler: bad head_commit.id")
 		http.Error(w, "400 bad head_commit.id", http.StatusBadRequest)
 		return
 	}
-	commit := match[1]
+	job.commit = match[1]
 
-	log.Printf("postHandler: got request %q %q %q", user, repo, commit)
+	// assign a fresh random uuid
+	job.uuid, err = uuid.NewRandom()
+	if err != nil {
+		log.Printf("postHandler: uuid error: %v", err)
+		http.Error(w, "500 error generating uuid", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("postHandler: got request %q %q %q %s", job.user, job.repo, job.commit, job.uuid)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
+}
+
+type job struct {
+	// identifying info for the commit being bids-validated
+	user   string
+	repo   string
+	commit string
+
+	// unique and un-guessable identifier,
+	// used for the filename/url of the generated results page
+	uuid uuid.UUID
 }
