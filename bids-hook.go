@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -204,7 +205,8 @@ type job struct {
 
 // postPending posts a "pending" (yellow dot) commit status to Gitea
 func (j job) postPending(ctx context.Context) error {
-	url := giteaApiUrl.JoinPath("repos", j.user, j.repo, "statuses", j.commit)
+	url := *giteaApiUrl
+	url.Path = path.Join(url.Path, "repos", j.user, j.repo, "statuses", j.commit)
 
 	reqBody, err := json.Marshal(map[string]string{
 		"context":     "bids-validator",
