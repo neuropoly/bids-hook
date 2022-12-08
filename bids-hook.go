@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"io"
 	"log"
@@ -21,7 +25,15 @@ var (
 	bidsHookUrl = urlMustParse("http://127.0.0.1:2845/bids-hook")
 
 	// secret used to authenticate api calls from Gitea to bids-hook
+	// this should be entered as-in in Gitea to configure the webhook
 	bidsHookSecret = []byte("blabla")
+
+	// the base URL to reach Gitea's API
+	giteaApiUrl = urlMustParse("http://127.0.0.1:3000/api/v1")
+
+	// secret used to authenticate api calls from bids-hook to Gitea
+	// generated from a gitea admin account under "Settings" -> "Applications"
+	giteaApiSecret = []byte("69e45fa9cfa75a7497633c6be8dd2347226e2f62")
 
 	// json field validation patterns
 	fullnamePattern = regexp.MustCompile(`^([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+)$`)
@@ -41,6 +53,7 @@ func main() {
 		Addr:           bidsHookUrl.Host,
 		Handler:        http.HandlerFunc(router),
 		ReadTimeout:    1 * time.Second,
+		WriteTimeout:   3 * time.Second,
 		MaxHeaderBytes: 4 << 10,
 	}
 	log.Printf("main: listening on %q", bidsHookUrl)
@@ -164,6 +177,15 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// post pending status on Gitea
+	// (this doubles as a test that Gitea is reachable)
+	err = job.postPending(r.Context())
+	if err != nil {
+		log.Printf("postHandler: error posting commit status: %v", err)
+		http.Error(w, "500 error posting commit status", http.StatusInternalServerError)
+		return
+	}
+
 	log.Printf("postHandler: got request %q %q %q %s", job.user, job.repo, job.commit, job.uuid)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusAccepted)
@@ -178,4 +200,41 @@ type job struct {
 	// unique and un-guessable identifier,
 	// used for the filename/url of the generated results page
 	uuid uuid.UUID
+}
+
+// postPending posts a "pending" (yellow dot) commit status to Gitea
+func (j job) postPending(ctx context.Context) error {
+	url := giteaApiUrl.JoinPath("repos", j.user, j.repo, "statuses", j.commit)
+
+	reqBody, err := json.Marshal(map[string]string{
+		"context":     "bids-validator",
+		"description": "waiting for results",
+		"state":       "pending",
+		"url":         "",
+	})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url.String(), bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", fmt.Sprintf("token %s", giteaApiSecret))
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	_, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode > 299 {
+		return errors.New(fmt.Sprintf("got http status code %d", resp.StatusCode))
+	}
+
+	return nil
 }
