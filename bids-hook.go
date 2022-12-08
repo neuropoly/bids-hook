@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"path"
 )
 
 var (
@@ -204,7 +205,9 @@ type job struct {
 
 // postPending posts a "pending" (yellow dot) commit status to Gitea
 func (j job) postPending(ctx context.Context) error {
-	url := giteaApiUrl.JoinPath("repos", j.user, j.repo, "statuses", j.commit)
+	url := *giteaApiUrl
+	path := path.Join(giteaApiUrl.Path, "repos", j.user, j.repo, "statuses", j.commit)
+	url.Path = path
 
 	reqBody, err := json.Marshal(map[string]string{
 		"context":     "bids-validator",
