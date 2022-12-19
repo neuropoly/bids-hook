@@ -35,6 +35,11 @@ var (
 	// generated from a gitea admin account under "Settings" -> "Applications"
 	giteaApiSecret = []byte("69e45fa9cfa75a7497633c6be8dd2347226e2f62")
 
+	// channel used to ferry jobs from the server to the worker
+	jobs = make(chan job, 20)
+	// channel used as a semaphore, to limit total jobs pending
+	limiter = make(chan struct{}, cap(jobs))
+
 	// json field validation patterns
 	fullnamePattern = regexp.MustCompile(`^([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+)$`)
 	commitPattern   = regexp.MustCompile(`^([0-9a-f]{40})$`)
@@ -52,6 +57,9 @@ func urlMustParse(rawURL string) *url.URL {
 }
 
 func main() {
+	log.Printf("main: starting worker")
+	go worker()
+
 	server := &http.Server{
 		Addr:           bidsHookUrl.Host,
 		Handler:        http.HandlerFunc(router),
@@ -181,17 +189,35 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	job.uuid = match[1]
 
+	// reserve a spot in the job queue
+	select {
+	case limiter <- struct{}{}:
+		// success, spot reserved
+	default:
+		log.Printf("postHandler: queue is full, refused job %q", job)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "503 queue is full", http.StatusServiceUnavailable)
+		return
+	}
+	// from this point on, all code paths should either:
+	// * (success) send a job on the jobs channel to use the reserved spot, or
+	// * (failure) receive from the limiter channel to free the reserved spot
+
 	// post pending status on Gitea
 	// (this doubles as a test that Gitea is reachable)
 	err = job.postPending(r.Context())
 	if err != nil {
 		log.Printf("postHandler: error posting commit status: %v", err)
 		http.Error(w, "500 error posting commit status", http.StatusInternalServerError)
+		<-limiter // free the already reserved spot
 		return
 	}
 
-	log.Printf("postHandler: got request %q %q %q %q", job.user, job.repo, job.commit, job.uuid)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	// send the job to the worker
+	log.Printf("postHandler: accepted job %q", job)
+	jobs <- job
+
+	// reply to Gitea
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -242,4 +268,15 @@ func (j job) postPending(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func worker() {
+	for job := range jobs {
+		log.Printf("worker: starting job %q", job)
+		//TODO: actually run bids-validator
+		time.Sleep(10 * time.Second)
+
+		log.Printf("worker: done with job %q", job)
+		<-limiter
+	}
 }
