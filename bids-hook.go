@@ -229,7 +229,7 @@ func (j job) postPending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = io.ReadAll(resp.Body)
+	_, err = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		return err
