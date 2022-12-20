@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"path"
 	"regexp"
 	"strings"
@@ -43,10 +44,20 @@ var (
 	// generated from a gitea admin account under "Settings" -> "Applications"
 	giteaApiSecret = []byte("69e45fa9cfa75a7497633c6be8dd2347226e2f62")
 
+	// the base URL for writing links to Gitea
+	giteaPublicUrl = urlMustParse("http://127.0.0.1:3000/")
+
 	// channel used to ferry jobs from the server to the worker
 	jobs = make(chan job, 20)
 	// channel used as a semaphore, to limit total jobs pending
 	limiter = make(chan struct{}, cap(jobs))
+
+	// executable run by the worker for each accepted job
+	// the exit code will be used for the commit status posted to Gitea:
+	// * 0 = "success" (green checkmark)
+	// * 1 = "failure" (red "X" mark)
+	// * 2 = "warning" (yellow "!" mark)
+	workerScript = "./worker"
 
 	// json field validation patterns
 	fullnamePattern = regexp.MustCompile(`^([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+)$`)
@@ -213,7 +224,7 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 
 	// post pending status on Gitea
 	// (this doubles as a test that Gitea is reachable)
-	err = job.postStatus(r.Context(), "waiting for results", statePending, "")
+	err = job.postStatus(r.Context(), statePending)
 	if err != nil {
 		log.Printf("postHandler: error posting commit status: %v", err)
 		http.Error(w, "500 error posting commit status", http.StatusInternalServerError)
@@ -240,23 +251,49 @@ type job struct {
 	uuid string
 }
 
+// link to the results page for this job
+func (j job) resultUrl() string {
+	url := *giteaPublicUrl
+	url.Path = path.Join(url.Path, "assets", fmt.Sprintf("%s.html", j.uuid))
+	return url.String()
+}
+
 // postStatus posts a commit status to Gitea
 // 'state' should be one of the constants defined at the top of this module
-func (j job) postStatus(ctx context.Context, description, state, url string) error {
-	apiUrl := *giteaApiUrl
-	apiUrl.Path = path.Join(apiUrl.Path, "repos", j.user, j.repo, "statuses", j.commit)
+func (j job) postStatus(ctx context.Context, state string) error {
+	url := *giteaApiUrl
+	url.Path = path.Join(url.Path, "repos", j.user, j.repo, "statuses", j.commit)
+
+	var description, targetUrl string
+	switch state {
+	case statePending:
+		description = "waiting for results"
+		targetUrl = ""
+	case stateSuccess:
+		description = "validation passed"
+		targetUrl = j.resultUrl()
+	case stateFailure:
+		description = "validation failed"
+		targetUrl = j.resultUrl()
+	case stateWarning:
+		description = "validation passed with warnings"
+		targetUrl = j.resultUrl()
+	case stateError:
+		description = "internal error"
+		targetUrl = ""
+	}
 
 	reqBody, err := json.Marshal(map[string]string{
 		"context":     "bids-validator",
 		"description": description,
 		"state":       state,
-		"url":         url,
+		"target_url":  targetUrl,
 	})
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiUrl.String(), bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url.String(), bytes.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
@@ -279,12 +316,40 @@ func (j job) postStatus(ctx context.Context, description, state, url string) err
 	return nil
 }
 
+func (j job) run() (state string, _ error) {
+	cmd := exec.Command(workerScript)
+	err := cmd.Run()
+	if err == nil {
+		return stateSuccess, nil
+	} else {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			switch exitErr.ExitCode() {
+			case 1:
+				return stateFailure, nil
+			case 2:
+				return stateWarning, nil
+			default:
+				return stateError, err
+			}
+		} else {
+			return stateError, err
+		}
+	}
+}
+
 func worker() {
 	for job := range jobs {
 		log.Printf("worker: starting job %q", job)
-		//TODO: actually run bids-validator
-		time.Sleep(10 * time.Second)
-
+		state, err := job.run()
+		if err != nil {
+			log.Printf("worker: error running job: %v", err)
+		}
+		ctx, done := context.WithTimeout(context.Background(), 3*time.Second)
+		err = job.postStatus(ctx, state)
+		done()
+		if err != nil {
+			log.Printf("worker: error posting commit status: %v", err)
+		}
 		log.Printf("worker: done with job %q", job)
 		<-limiter
 	}
