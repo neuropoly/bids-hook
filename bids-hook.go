@@ -53,6 +53,10 @@ var (
 	// it should already contain a "public" subdirectory
 	giteaCustomPath = "./custom"
 
+	// the path to a log directory for worker stderr output
+	// it should already exist
+	workerLogPath = "./log"
+
 	// channel used to ferry jobs from the server to the worker
 	jobs = make(chan job, 20)
 	// channel used as a semaphore, to limit total jobs pending
@@ -66,6 +70,7 @@ var (
 	// * 1 = "failure" (red "X" mark)
 	// * 2 = "warning" (yellow "!" mark)
 	// stdout will be saved to the Gitea url "/assets/${BH_UUID}.html" and linked from the commit status
+	// stderr will be appended to the log file "{{workerLogPath}}/${BH_UUID}.log"
 	workerScript = "./worker"
 
 	// json field validation patterns
@@ -341,7 +346,7 @@ func (j job) run() (state string, _ error) {
 		fmt.Sprintf("BH_UUID=%s", j.uuid),
 	)
 
-	// set up the results file
+	// redirect stdout to the result file
 	stdout, err := os.OpenFile(j.resultPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		return stateError, err
@@ -353,6 +358,19 @@ func (j job) run() (state string, _ error) {
 		}
 	}()
 	cmd.Stdout = stdout
+
+	// redirect stderr to the log file
+	stderr, err := os.OpenFile(j.resultPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return stateError, err
+	}
+	defer func() {
+		err = stderr.Close()
+		if err != nil {
+			log.Printf("job.run: error closing stderr: %v", err)
+		}
+	}()
+	cmd.Stderr = stderr
 
 	// call the worker script and check its exit code
 	err = cmd.Run()
