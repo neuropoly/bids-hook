@@ -19,6 +19,14 @@ import (
 	"time"
 )
 
+const (
+	statePending = "pending" // yellow dot
+	stateSuccess = "success" // green checkmark
+	stateFailure = "failure" // red "X" mark
+	stateWarning = "warning" // yellow "!" mark
+	stateError   = "error"   // red "!" mark
+)
+
 var (
 	// 127.0.0.1 is localhost, and 2845 is 0xB1D
 	// this should be entered as-is in Gitea to configure the webhook
@@ -205,7 +213,7 @@ func postHandler(w http.ResponseWriter, r *http.Request) {
 
 	// post pending status on Gitea
 	// (this doubles as a test that Gitea is reachable)
-	err = job.postPending(r.Context())
+	err = job.postStatus(r.Context(), "waiting for results", statePending, "")
 	if err != nil {
 		log.Printf("postHandler: error posting commit status: %v", err)
 		http.Error(w, "500 error posting commit status", http.StatusInternalServerError)
@@ -232,22 +240,23 @@ type job struct {
 	uuid string
 }
 
-// postPending posts a "pending" (yellow dot) commit status to Gitea
-func (j job) postPending(ctx context.Context) error {
-	url := *giteaApiUrl
-	url.Path = path.Join(url.Path, "repos", j.user, j.repo, "statuses", j.commit)
+// postStatus posts a commit status to Gitea
+// 'state' should be one of the constants defined at the top of this module
+func (j job) postStatus(ctx context.Context, description, state, url string) error {
+	apiUrl := *giteaApiUrl
+	apiUrl.Path = path.Join(apiUrl.Path, "repos", j.user, j.repo, "statuses", j.commit)
 
 	reqBody, err := json.Marshal(map[string]string{
 		"context":     "bids-validator",
-		"description": "waiting for results",
-		"state":       "pending",
-		"url":         "",
+		"description": description,
+		"state":       state,
+		"url":         url,
 	})
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url.String(), bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiUrl.String(), bytes.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
