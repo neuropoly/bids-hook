@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -53,6 +54,8 @@ var (
 	limiter = make(chan struct{}, cap(jobs))
 
 	// executable run by the worker for each accepted job
+	// the environment will contain the details of the job in
+	// BH_USER, BH_REPO, BH_COMMIT, BH_UUID
 	// the exit code will be used for the commit status posted to Gitea:
 	// * 0 = "success" (green checkmark)
 	// * 1 = "failure" (red "X" mark)
@@ -318,6 +321,12 @@ func (j job) postStatus(ctx context.Context, state string) error {
 
 func (j job) run() (state string, _ error) {
 	cmd := exec.Command(workerScript)
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("BH_USER=%s", j.user),
+		fmt.Sprintf("BH_REPO=%s", j.repo),
+		fmt.Sprintf("BH_COMMIT=%s", j.commit),
+		fmt.Sprintf("BH_UUID=%s", j.uuid),
+	)
 	err := cmd.Run()
 	if err == nil {
 		return stateSuccess, nil
