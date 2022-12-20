@@ -48,6 +48,11 @@ var (
 	// the base URL for writing links to Gitea
 	giteaPublicUrl = urlMustParse("http://127.0.0.1:3000/")
 
+	// the path to Gitea's custom templates directory
+	// used to save job result pages
+	// it should already contain a "public" subdirectory
+	giteaCustomPath = "./custom"
+
 	// channel used to ferry jobs from the server to the worker
 	jobs = make(chan job, 20)
 	// channel used as a semaphore, to limit total jobs pending
@@ -60,6 +65,7 @@ var (
 	// * 0 = "success" (green checkmark)
 	// * 1 = "failure" (red "X" mark)
 	// * 2 = "warning" (yellow "!" mark)
+	// stdout will be saved to the Gitea url "/assets/${BH_UUID}.html" and linked from the commit status
 	workerScript = "./worker"
 
 	// json field validation patterns
@@ -254,11 +260,18 @@ type job struct {
 	uuid string
 }
 
-// link to the results page for this job
+// web link to the results page for this job
+// see also j.resultPath()
 func (j job) resultUrl() string {
 	url := *giteaPublicUrl
 	url.Path = path.Join(url.Path, "assets", fmt.Sprintf("%s.html", j.uuid))
 	return url.String()
+}
+
+// file path to the results page for this job
+// see also j.resultUrl()
+func (j job) resultPath() string {
+	return path.Join(giteaCustomPath, "public", fmt.Sprintf("%s.html", j.uuid))
 }
 
 // postStatus posts a commit status to Gitea
@@ -327,7 +340,22 @@ func (j job) run() (state string, _ error) {
 		fmt.Sprintf("BH_COMMIT=%s", j.commit),
 		fmt.Sprintf("BH_UUID=%s", j.uuid),
 	)
-	err := cmd.Run()
+
+	// set up the results file
+	stdout, err := os.OpenFile(j.resultPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return stateError, err
+	}
+	defer func() {
+		err = stdout.Close()
+		if err != nil {
+			log.Printf("job.run: error closing stdout: %v", err)
+		}
+	}()
+	cmd.Stdout = stdout
+
+	// call the worker script and check its exit code
+	err = cmd.Run()
 	if err == nil {
 		return stateSuccess, nil
 	} else {
