@@ -374,21 +374,15 @@ func (j job) run() (state string, _ error) {
 
 	// call the worker script and check its exit code
 	err = cmd.Run()
-	if err == nil {
+	switch cmd.ProcessState.ExitCode() {
+	case 0:
 		return stateSuccess, nil
-	} else {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			switch exitErr.ExitCode() {
-			case 1:
-				return stateFailure, nil
-			case 2:
-				return stateWarning, nil
-			default:
-				return stateError, err
-			}
-		} else {
-			return stateError, err
-		}
+	case 1:
+		return stateFailure, nil
+	case 2:
+		return stateWarning, nil
+	default:
+		return stateError, err
 	}
 }
 
