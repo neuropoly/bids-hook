@@ -10,13 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,40 +33,41 @@ const (
 )
 
 var (
-	// 127.0.0.1 is localhost, and 2845 is 0xB1D
+	// url that bids-hook listens on
+	// read from environment variable BIDS_HOOK_URL
 	// this should be entered as-is in Gitea to configure the webhook
-	bidsHookUrl = urlMustParse("http://127.0.0.1:2845/bids-hook")
+	bidsHookUrl *url.URL
 
 	// secret used to authenticate api calls from Gitea to bids-hook
+	// read from environment variable BIDS_HOOK_SECRET
 	// this should be entered as-in in Gitea to configure the webhook
-	bidsHookSecret = []byte("blabla")
+	bidsHookSecret []byte
 
 	// the base URL to reach Gitea's API
-	giteaApiUrl = urlMustParse("http://127.0.0.1:3000/api/v1")
+	// read from environment variable GITEA_API_URL
+	// should end with "/api/v1"
+	giteaApiUrl *url.URL
 
 	// secret used to authenticate api calls from bids-hook to Gitea
-	// generated from a gitea admin account under "Settings" -> "Applications"
-	giteaApiSecret = []byte("69e45fa9cfa75a7497633c6be8dd2347226e2f62")
+	// read from environment variable GITEA_API_SECRET
+	// can be generated from a gitea admin account under "Settings" -> "Applications"
+	giteaApiSecret []byte
 
-	// the base URL for writing links to Gitea
-	giteaPublicUrl = urlMustParse("http://127.0.0.1:3000/")
+	// the base URL for writing links to Gitea's static assets
+	// read from environment variable GITEA_PUBLIC_URL
+	// should end with "/assets"
+	giteaPublicUrl *url.URL
 
-	// the path to Gitea's custom templates directory
+	// the path to Gitea's static assets directory
+	// read from environment variable GITEA_PUBLIC_PATH
 	// used to save job result pages
-	// it should already contain a "public" subdirectory
-	giteaCustomPath = "./custom"
-
-	// the path to a log directory for worker stderr output
 	// it should already exist
-	workerLogPath = "./log"
-
-	// channel used to ferry jobs from the server to the worker
-	jobs = make(chan job, 20)
-	// channel used as a semaphore, to limit total jobs pending
-	limiter = make(chan struct{}, cap(jobs))
+	// should end with "/custom/public"
+	giteaPublicPath string
 
 	// executable run by the worker for each accepted job
-	// the environment will contain the details of the job in
+	// read from environment variable WORKER_SCRIPT
+	// when called, the environment will contain the details of the job in
 	// BH_USER, BH_REPO, BH_COMMIT, BH_UUID
 	// the exit code will be used for the commit status posted to Gitea:
 	// * 0 = "success" (green checkmark)
@@ -71,7 +75,18 @@ var (
 	// * 2 = "warning" (yellow "!" mark)
 	// stdout will be saved to the Gitea url "/assets/${BH_UUID}.html" and linked from the commit status
 	// stderr will be appended to the log file "{{workerLogPath}}/${BH_UUID}.log"
-	workerScript = "./worker"
+	workerScript string
+
+	// the path to a log directory for worker stderr output
+	// read from environment variable WORKER_LOG_PATH
+	// it should already exist
+	workerLogPath string
+
+	// channel used to ferry jobs from the server to the worker
+	// capacity read from environment variable WORKER_QUEUE_CAPACITY
+	jobs chan job
+	// channel used as a semaphore, to limit total jobs pending
+	limiter chan struct{}
 
 	// json field validation patterns
 	fullnamePattern = regexp.MustCompile(`^([0-9A-Za-z_.-]+)/([0-9A-Za-z_.-]+)$`)
@@ -90,6 +105,9 @@ func urlMustParse(rawURL string) *url.URL {
 }
 
 func main() {
+	log.Printf("main: reading config from environment")
+	readConfig()
+
 	log.Printf("main: starting worker")
 	go worker()
 
@@ -269,14 +287,19 @@ type job struct {
 // see also j.resultPath()
 func (j job) resultUrl() string {
 	url := *giteaPublicUrl
-	url.Path = path.Join(url.Path, "assets", fmt.Sprintf("%s.html", j.uuid))
+	url.Path = path.Join(url.Path, fmt.Sprintf("%s.html", j.uuid))
 	return url.String()
 }
 
 // file path to the results page for this job
 // see also j.resultUrl()
 func (j job) resultPath() string {
-	return path.Join(giteaCustomPath, "public", fmt.Sprintf("%s.html", j.uuid))
+	return filepath.Join(giteaPublicPath, fmt.Sprintf("%s.html", j.uuid))
+}
+
+// file path to the log file for this job
+func (j job) logPath() string {
+	return filepath.Join(workerLogPath, fmt.Sprintf("%s.log", j.uuid))
 }
 
 // postStatus posts a commit status to Gitea
@@ -360,7 +383,7 @@ func (j job) run() (state string, _ error) {
 	cmd.Stdout = stdout
 
 	// redirect stderr to the log file
-	stderr, err := os.OpenFile(j.resultPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	stderr, err := os.OpenFile(j.logPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return stateError, err
 	}
@@ -402,4 +425,105 @@ func worker() {
 		log.Printf("worker: done with job %q", job)
 		<-limiter
 	}
+}
+
+// readConfig sets up global variables from environment values
+func readConfig() {
+	var (
+		val  string
+		ok   bool
+		err  error
+		info fs.FileInfo
+	)
+
+	val, ok = os.LookupEnv("BIDS_HOOK_URL")
+	if !ok {
+		log.Fatal("missing environment variable BIDS_HOOK_URL")
+	}
+	bidsHookUrl, err = url.Parse(val)
+	if err != nil {
+		log.Fatalf("error parsing BIDS_HOOK_URL: %v", err)
+	}
+
+	val, ok = os.LookupEnv("BIDS_HOOK_SECRET")
+	if !ok {
+		log.Fatal("missing environment variable BIDS_HOOK_SECRET")
+	}
+	bidsHookSecret = []byte(val)
+
+	val, ok = os.LookupEnv("GITEA_API_URL")
+	if !ok {
+		log.Fatal("missing environment variable GITEA_API_URL")
+	}
+	giteaApiUrl, err = url.Parse(val)
+	if err != nil {
+		log.Fatalf("error parsing GITEA_API_URL: %v", err)
+	}
+
+	val, ok = os.LookupEnv("GITEA_API_SECRET")
+	if !ok {
+		log.Fatal("missing environment variable GITEA_API_SECRET")
+	}
+	giteaApiSecret = []byte(val)
+
+	val, ok = os.LookupEnv("GITEA_PUBLIC_URL")
+	if !ok {
+		log.Fatal("missing environment variable GITEA_PUBLIC_URL")
+	}
+	giteaPublicUrl, err = url.Parse(val)
+	if err != nil {
+		log.Fatalf("error parsing GITEA_PUBLIC_URL: %v", err)
+	}
+
+	val, ok = os.LookupEnv("GITEA_PUBLIC_PATH")
+	if !ok {
+		log.Fatal("missing environment variable GITEA_PUBLIC_PATH")
+	}
+	giteaPublicPath, err = filepath.Abs(val)
+	if err != nil {
+		log.Fatalf("invalid GITEA_PUBLIC_PATH: %v", err)
+	}
+	info, err = os.Stat(giteaPublicPath)
+	if err != nil {
+		log.Fatalf("error opening GITEA_PUBLIC_PATH: %v", err)
+	}
+	if !info.IsDir() {
+		log.Fatal("GITEA_PUBLIC_PATH is not a directory")
+	}
+
+	val, ok = os.LookupEnv("WORKER_SCRIPT")
+	if !ok {
+		log.Fatal("missing environment variable WORKER_SCRIPT")
+	}
+	workerScript, err = exec.LookPath(val)
+	if err != nil {
+		log.Fatalf("invalid WORKER_SCRIPT: %v", err)
+	}
+
+	val, ok = os.LookupEnv("WORKER_LOG_PATH")
+	if !ok {
+		log.Fatal("missing environment variable WORKER_LOG_PATH")
+	}
+	workerLogPath, err = filepath.Abs(val)
+	if err != nil {
+		log.Fatalf("invalid WORKER_LOG_PATH: %v", err)
+	}
+	info, err = os.Stat(workerLogPath)
+	if err != nil {
+		log.Fatalf("error opening WORKER_LOG_PATH: %v", err)
+	}
+	if !info.IsDir() {
+		log.Fatal("WORKER_LOG_PATH is not a directory")
+	}
+
+	val, ok = os.LookupEnv("WORKER_QUEUE_CAPACITY")
+	if !ok {
+		log.Fatal("missing environment variable WORKER_QUEUE_CAPACITY")
+	}
+	capacity, err := strconv.Atoi(val)
+	if err != nil {
+		log.Fatalf("error parsing WORKER_QUEUE_CAPACITY: %v", err)
+	}
+	jobs = make(chan job, capacity)
+	limiter = make(chan struct{}, capacity)
 }

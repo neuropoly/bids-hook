@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# 127.0.0.1 is localhost, and 2845 is 0xB1D
+export BIDS_HOOK_URL='http://127.0.0.1:2845/bids-hook'
+export BIDS_HOOK_SECRET='blabla'
+
+export GITEA_API_URL='http://127.0.0.1:3000/api/v1'
+export GITEA_API_SECRET='69e45fa9cfa75a7497633c6be8dd2347226e2f62'
+
+export GITEA_PUBLIC_URL='http://127.0.0.1:3000/assets'
+export GITEA_PUBLIC_PATH='./custom/public'
+
+export WORKER_SCRIPT='./worker'
+export WORKER_LOG_PATH='./log'
+export WORKER_QUEUE_CAPACITY=20
+
+./bids-hook
