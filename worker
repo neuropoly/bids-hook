@@ -1,6 +1,5 @@
 #!/bin/bash
 set -o nounset -o pipefail
-trap 'exit 3' ERR
 
 (exec 1>&2
 date
@@ -12,13 +11,62 @@ BH_UUID=${BH_UUID}
 EOF
 )
 
+GITEA_REPO="$GITEA_REPOSITORY_ROOT"/"${BH_USER}"/"${BH_REPO}".git
+#echo $GITEA_REPO #DEBUG
+
 sleep 5
 
 cat <<"EOF"
 <!DOCTYPE html>
 <html lang=en>
 <title>a title</title>
-<p>a paragraph
+<p>a paragraph</p>
+<pre>
 EOF
 
-exit 0
+(
+WORKDIR="$(mktemp -d --tmpdir bids-hook."$BH_UUID".XXXXXXXXXXX)"
+cd "$WORKDIR"
+
+#git clone "$GITEA_REPO" dataset && cd dataset # this is standard but clones a full copy of the repo which might be expensive
+#git clone -b "${BH_COMMIT}" --depth 1 "$GITEA_REPO" dataset && cd dataset # this doesn't work unless BH_COMMIT is a branch name
+# this is more complicated but it allows to us to --depth 1 with branches OR commit IDs:
+(mkdir dataset && cd dataset && git init && git remote add origin "$GITEA_REPO" && git fetch --depth 1 origin "${BH_COMMIT}")
+#trap 'echo -n "cleaning "; pwd; chmod -R +w "$WORKDIR" && rm -rf "$WORKDIR"' EXIT
+(
+cd dataset
+git checkout "$BH_COMMIT"
+set -e
+
+if git ls-remote --exit-code "$GITEA_REPO" "refs/heads/git-annex" >/dev/null; then
+  ANNEXED=1
+else
+  ANNEXED=""
+fi
+
+if [ -n "$ANNEXED" ]; then
+  set -x
+  # this reduces copies; always overrides annex.hardlink even if that is set system-wide
+  git config annex.thin true
+  # make sure we don't corrupt origin accidentally
+  git config remote.origin.annex-readonly true
+  git config annex.private true # XXX this doesn't do anything until git-annex 10
+  git annex init
+  git annex dead here # this is like annex.private, but has to be run
+  git annex sync --only-annex --no-content # grab the git-annex branch (since we did a shallow clone above)
+  git annex copy --from origin  # NB: using copy --from origin and not git annex get to ensure we're validating the contents of origin and not any special remotes
+else
+  set -x
+fi
+
+bids-validator --verbose .
+)
+) 2>&1
+R=$?
+
+cat <<"EOF"
+</pre>
+</html>
+EOF
+
+exit $R
