@@ -279,13 +279,13 @@ type job struct {
 // web link to the results page for this job
 // see also j.resultPath()
 func (j job) resultUrl() string {
-	return giteaRootUrl.JoinPath("assets", fmt.Sprintf("%s.html", j.uuid)).String()
+	return giteaRootUrl.JoinPath("assets", "bids-validator", j.uuid[:2], j.uuid[2:4], fmt.Sprintf("%s.html", j.uuid)).String()
 }
 
 // file path to the results page for this job
 // see also j.resultUrl()
 func (j job) resultPath() string {
-	return filepath.Join(giteaCustom, "public", fmt.Sprintf("%s.html", j.uuid))
+	return filepath.Join(giteaCustom, "public", "bids-validator", j.uuid[:2], j.uuid[2:4], fmt.Sprintf("%s.html", j.uuid))
 }
 
 // file path to the log file for this job
@@ -360,7 +360,12 @@ func (j job) run() (state string, _ error) {
 	)
 
 	// redirect stdout to the result file
-	stdout, err := os.OpenFile(j.resultPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	resultPath := j.resultPath()
+	err := os.MkdirAll(filepath.Dir(resultPath), 0750)
+	if err != nil {
+		return stateError, err
+	}
+	stdout, err := os.OpenFile(resultPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0640)
 	if err != nil {
 		return stateError, err
 	}
@@ -464,7 +469,7 @@ func readConfig() {
 	if err != nil {
 		log.Fatalf("invalid GITEA_CUSTOM: %v", err)
 	}
-	err = os.MkdirAll(filepath.Join(giteaCustom, "public"), 0750)
+	err = os.MkdirAll(filepath.Join(giteaCustom, "public", "bids-validator"), 0750)
 	if err != nil {
 		log.Fatalf("error creating output folder: %v", err)
 	}
