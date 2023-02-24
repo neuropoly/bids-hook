@@ -42,20 +42,15 @@ var (
 	// this should be entered as-in in Gitea to configure the webhook
 	bidsHookSecret []byte
 
-	// the base URL to reach Gitea's API
-	// read from environment variable GITEA_API_URL
-	// should end with "/api/v1"
-	giteaApiUrl *url.URL
+	// the base URL to reach Gitea
+	// read from environment variable GITEA_ROOT_URL
+	// should match Gitea's app.ini's [server].ROOT_URL
+	giteaRootUrl *url.URL
 
 	// secret used to authenticate api calls from bids-hook to Gitea
 	// read from environment variable GITEA_API_SECRET
 	// can be generated from a gitea admin account under "Settings" -> "Applications"
 	giteaApiSecret []byte
-
-	// the base URL for writing links to Gitea's static assets
-	// read from environment variable GITEA_PUBLIC_URL
-	// should end with "/assets"
-	giteaPublicUrl *url.URL
 
 	// the path to Gitea's static assets directory
 	// read from environment variable GITEA_PUBLIC_PATH
@@ -285,7 +280,7 @@ type job struct {
 // web link to the results page for this job
 // see also j.resultPath()
 func (j job) resultUrl() string {
-	return giteaPublicUrl.JoinPath(fmt.Sprintf("%s.html", j.uuid)).String()
+	return giteaRootUrl.JoinPath("assets", fmt.Sprintf("%s.html", j.uuid)).String()
 }
 
 // file path to the results page for this job
@@ -302,7 +297,7 @@ func (j job) logPath() string {
 // postStatus posts a commit status to Gitea
 // 'state' should be one of the constants defined at the top of this module
 func (j job) postStatus(ctx context.Context, state string) error {
-	url := giteaApiUrl.JoinPath("repos", j.user, j.repo, "statuses", j.commit)
+	url := giteaRootUrl.JoinPath("api", "v1", "repos", j.user, j.repo, "statuses", j.commit)
 
 	var description, targetUrl string
 	switch state {
@@ -447,13 +442,13 @@ func readConfig() {
 	}
 	bidsHookSecret = []byte(val)
 
-	val, ok = os.LookupEnv("GITEA_API_URL")
+	val, ok = os.LookupEnv("GITEA_ROOT_URL")
 	if !ok {
-		log.Fatal("missing environment variable GITEA_API_URL")
+		log.Fatal("missing environment variable GITEA_ROOT_URL")
 	}
-	giteaApiUrl, err = url.Parse(val)
+	giteaRootUrl, err = url.Parse(val)
 	if err != nil {
-		log.Fatalf("error parsing GITEA_API_URL: %v", err)
+		log.Fatalf("error parsing GITEA_ROOT_URL: %v", err)
 	}
 
 	val, ok = os.LookupEnv("GITEA_API_SECRET")
@@ -461,15 +456,6 @@ func readConfig() {
 		log.Fatal("missing environment variable GITEA_API_SECRET")
 	}
 	giteaApiSecret = []byte(val)
-
-	val, ok = os.LookupEnv("GITEA_PUBLIC_URL")
-	if !ok {
-		log.Fatal("missing environment variable GITEA_PUBLIC_URL")
-	}
-	giteaPublicUrl, err = url.Parse(val)
-	if err != nil {
-		log.Fatalf("error parsing GITEA_PUBLIC_URL: %v", err)
-	}
 
 	val, ok = os.LookupEnv("GITEA_PUBLIC_PATH")
 	if !ok {
