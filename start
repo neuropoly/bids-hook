@@ -9,6 +9,10 @@ set -e
 
 : ${GITEA_CUSTOM:="$GITEA_WORK_DIR/custom"}
 
+: ${GITEA_APP_DATA_PATH:="$GITEA_WORK_DIR/data"}
+: ${GITEA_REPOSITORY_ROOT:="$GITEA_APP_DATA_PATH/gitea-repositories"}
+
+export GITEA_REPOSITORY_ROOT
 export GITEA_CUSTOM
 
 # 127.0.0.1 is localhost, and 2845 is 0xB1D
