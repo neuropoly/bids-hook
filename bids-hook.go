@@ -199,6 +199,7 @@ func installWebhook() error {
 	// This is the hook we want to exist
 	// Note: Gitea internally uses a CreateHookOption or a EditHookOption for these
 	//       which are two different subsets of the Hook type. So we're not being 100% correct here.
+	log.Printf("SECERT: %s", string(bidsHookSecret))
 	hook := Hook{
 		Type: "gitea",
 		Config: map[string]string{
@@ -225,6 +226,7 @@ func installWebhook() error {
 	}
 	req.Header.Add("Authorization", fmt.Sprintf("token %s", giteaToken))
 	req.Header.Add("Accept", "application/json")
+	log.Printf("Calling %s %s\n", req.Method, url.String()) // DEBUG
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -243,11 +245,15 @@ func installWebhook() error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Read this: |%s|\n", body)
 	// search the result for pre-existing webhook
 	found := false
 	var id int64
+	fmt.Printf("hook: %#v\n", hook) // DEBUG
 	for _, _hook := range hooks {
+		fmt.Printf("hook: %#v\n", _hook) // DEBUG
 		if _hook.URL == hook.URL {
+			fmt.Printf("found at id: %#v\n", _hook.ID) // DEBUG
 			found = true
 			id = _hook.ID
 			break
@@ -260,6 +266,7 @@ func installWebhook() error {
 		method = http.MethodPatch
 		url = url.JoinPath(fmt.Sprintf("%d", id))
 	}
+	log.Printf("Calling %s %s\n", method, url.String()) // DEBUG
 
 	req, err = http.NewRequest(method, url.String(), bytes.NewReader(hookJSON))
 	if err != nil {
@@ -274,12 +281,14 @@ func installWebhook() error {
 		return err
 	}
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		log.Printf("Bailing\n")
 		return errors.New(fmt.Sprintf("got http status code %d", resp.StatusCode))
 	}
 	body, err = ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Read: |%s|\n", body)
 	defer resp.Body.Close()
 
 	return nil
