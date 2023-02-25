@@ -1,13 +1,22 @@
 #!/bin/bash
 
+set -e
+
+# this replicates the default location logic from https://docs.gitea.io/en-us/config-cheat-sheet/
+# any setting can be overridden just by setting its variable before calling this script
+: ${GITEA_APP_PATH:=../gitea/gitea}
+: ${GITEA_WORK_DIR:="$(dirname "$GITEA_APP_PATH")"}
+
+: ${GITEA_CUSTOM:="$GITEA_WORK_DIR/custom"}
+
+export GITEA_CUSTOM
+
 # 127.0.0.1 is localhost, and 2845 is 0xB1D
 export BIDS_HOOK_URL='http://127.0.0.1:2845/bids-hook'
 export BIDS_HOOK_SECRET='blabla'
 
 export GITEA_ROOT_URL='http://127.0.0.1:3000'
 export GITEA_TOKEN='69e45fa9cfa75a7497633c6be8dd2347226e2f62'
-
-export GITEA_PUBLIC_PATH='./custom/public'
 
 export WORKER_SCRIPT='./worker'
 export WORKER_LOG_PATH='./log'
