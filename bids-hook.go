@@ -48,9 +48,9 @@ var (
 	giteaRootUrl *url.URL
 
 	// secret used to authenticate api calls from bids-hook to Gitea
-	// read from environment variable GITEA_API_SECRET
+	// read from environment variable GITEA_TOKEN
 	// can be generated from a gitea admin account under "Settings" -> "Applications"
-	giteaApiSecret []byte
+	giteaToken []byte
 
 	// the path to Gitea's static assets directory
 	// read from environment variable GITEA_PUBLIC_PATH
@@ -332,7 +332,7 @@ func (j job) postStatus(ctx context.Context, state string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Authorization", fmt.Sprintf("token %s", giteaApiSecret))
+	req.Header.Add("Authorization", fmt.Sprintf("token %s", giteaToken))
 	req.Header.Add("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -451,11 +451,11 @@ func readConfig() {
 		log.Fatalf("error parsing GITEA_ROOT_URL: %v", err)
 	}
 
-	val, ok = os.LookupEnv("GITEA_API_SECRET")
+	val, ok = os.LookupEnv("GITEA_TOKEN")
 	if !ok {
-		log.Fatal("missing environment variable GITEA_API_SECRET")
+		log.Fatal("missing environment variable GITEA_TOKEN")
 	}
-	giteaApiSecret = []byte(val)
+	giteaToken = []byte(val)
 
 	val, ok = os.LookupEnv("GITEA_PUBLIC_PATH")
 	if !ok {
