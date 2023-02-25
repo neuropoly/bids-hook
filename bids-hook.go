@@ -52,12 +52,11 @@ var (
 	// can be generated from a gitea admin account under "Settings" -> "Applications"
 	giteaToken []byte
 
-	// the path to Gitea's static assets directory
-	// read from environment variable GITEA_PUBLIC_PATH
+	// the path to Gitea's custom/ directory
+	// read from environment variable GITEA_CUSTOM
 	// used to save job result pages
-	// it should already exist
-	// should end with "/custom/public"
-	giteaPublicPath string
+	// see https://docs.gitea.io/en-us/config-cheat-sheet/#default-configuration-non-appini-configuration
+	giteaCustom string
 
 	// executable run by the worker for each accepted job
 	// read from environment variable WORKER_SCRIPT
@@ -286,7 +285,7 @@ func (j job) resultUrl() string {
 // file path to the results page for this job
 // see also j.resultUrl()
 func (j job) resultPath() string {
-	return filepath.Join(giteaPublicPath, fmt.Sprintf("%s.html", j.uuid))
+	return filepath.Join(giteaCustom, "public", fmt.Sprintf("%s.html", j.uuid))
 }
 
 // file path to the log file for this job
@@ -457,20 +456,17 @@ func readConfig() {
 	}
 	giteaToken = []byte(val)
 
-	val, ok = os.LookupEnv("GITEA_PUBLIC_PATH")
+	val, ok = os.LookupEnv("GITEA_CUSTOM")
 	if !ok {
-		log.Fatal("missing environment variable GITEA_PUBLIC_PATH")
+		log.Fatal("missing environment variable GITEA_CUSTOM")
 	}
-	giteaPublicPath, err = filepath.Abs(val)
+	giteaCustom, err = filepath.Abs(val)
 	if err != nil {
-		log.Fatalf("invalid GITEA_PUBLIC_PATH: %v", err)
+		log.Fatalf("invalid GITEA_CUSTOM: %v", err)
 	}
-	info, err = os.Stat(giteaPublicPath)
+	err = os.MkdirAll(filepath.Join(giteaCustom, "public"), 0750)
 	if err != nil {
-		log.Fatalf("error opening GITEA_PUBLIC_PATH: %v", err)
-	}
-	if !info.IsDir() {
-		log.Fatal("GITEA_PUBLIC_PATH is not a directory")
+		log.Fatalf("error creating output folder: %v", err)
 	}
 
 	val, ok = os.LookupEnv("WORKER_SCRIPT")
