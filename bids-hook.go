@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -286,9 +285,7 @@ type job struct {
 // web link to the results page for this job
 // see also j.resultPath()
 func (j job) resultUrl() string {
-	url := *giteaPublicUrl
-	url.Path = path.Join(url.Path, fmt.Sprintf("%s.html", j.uuid))
-	return url.String()
+	return giteaPublicUrl.JoinPath(fmt.Sprintf("%s.html", j.uuid)).String()
 }
 
 // file path to the results page for this job
@@ -305,8 +302,7 @@ func (j job) logPath() string {
 // postStatus posts a commit status to Gitea
 // 'state' should be one of the constants defined at the top of this module
 func (j job) postStatus(ctx context.Context, state string) error {
-	url := *giteaApiUrl
-	url.Path = path.Join(url.Path, "repos", j.user, j.repo, "statuses", j.commit)
+	url := giteaApiUrl.JoinPath("repos", j.user, j.repo, "statuses", j.commit)
 
 	var description, targetUrl string
 	switch state {
