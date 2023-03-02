@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -66,13 +65,13 @@ var (
 	// * 0 = "success" (green checkmark)
 	// * 1 = "failure" (red "X" mark)
 	// * 2 = "warning" (yellow "!" mark)
-	// stdout will be saved to the Gitea url "/assets/${BH_UUID}.html" and linked from the commit status
-	// stderr will be appended to the log file "{{workerLogPath}}/${BH_UUID}.log"
+	// * 3+ = "error" (red "!" mark, no link to the result page)
+	// stdout will be saved to the Gitea url "/assets/bids-validator/XX/YY/${BH_UUID}.html" and linked from the commit status
+	// stderr will be appended to the log file "{{workerLogPath}}/XX/YY/${BH_UUID}.log"
 	workerScript string
 
 	// the path to a log directory for worker stderr output
 	// read from environment variable WORKER_LOG_PATH
-	// it should already exist
 	workerLogPath string
 
 	// channel used to ferry jobs from the server to the worker
@@ -290,7 +289,7 @@ func (j job) resultPath() string {
 
 // file path to the log file for this job
 func (j job) logPath() string {
-	return filepath.Join(workerLogPath, fmt.Sprintf("%s.log", j.uuid))
+	return filepath.Join(workerLogPath, j.uuid[:2], j.uuid[2:4], fmt.Sprintf("%s.log", j.uuid))
 }
 
 // postStatus posts a commit status to Gitea
@@ -378,7 +377,12 @@ func (j job) run() (state string, _ error) {
 	cmd.Stdout = stdout
 
 	// redirect stderr to the log file
-	stderr, err := os.OpenFile(j.logPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	logPath := j.logPath()
+	err = os.MkdirAll(filepath.Dir(logPath), 0750)
+	if err != nil {
+		return stateError, err
+	}
+	stderr, err := os.OpenFile(j.logPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
 	if err != nil {
 		return stateError, err
 	}
@@ -425,10 +429,9 @@ func worker() {
 // readConfig sets up global variables from environment values
 func readConfig() {
 	var (
-		val  string
-		ok   bool
-		err  error
-		info fs.FileInfo
+		val string
+		ok  bool
+		err error
 	)
 
 	val, ok = os.LookupEnv("BIDS_HOOK_URL")
@@ -491,12 +494,9 @@ func readConfig() {
 	if err != nil {
 		log.Fatalf("invalid WORKER_LOG_PATH: %v", err)
 	}
-	info, err = os.Stat(workerLogPath)
+	err = os.MkdirAll(workerLogPath, 0750)
 	if err != nil {
-		log.Fatalf("error opening WORKER_LOG_PATH: %v", err)
-	}
-	if !info.IsDir() {
-		log.Fatal("WORKER_LOG_PATH is not a directory")
+		log.Fatalf("error creating log folder: %v", err)
 	}
 
 	val, ok = os.LookupEnv("WORKER_QUEUE_CAPACITY")
