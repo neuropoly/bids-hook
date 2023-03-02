@@ -22,7 +22,7 @@ export BIDS_HOOK_SECRET='blabla'
 export GITEA_ROOT_URL='http://127.0.0.1:3000'
 export GITEA_TOKEN='69e45fa9cfa75a7497633c6be8dd2347226e2f62'
 
-export WORKER_SCRIPT='./worker'
+export WORKER_SCRIPT='./worker-script'
 export WORKER_LOG_PATH='./log'
 export WORKER_QUEUE_CAPACITY=20
 
