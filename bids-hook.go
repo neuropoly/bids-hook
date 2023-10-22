@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,8 +41,7 @@ var (
 	bidsHookUrl *url.URL
 
 	// secret used to authenticate api calls from Gitea to bids-hook
-	// read from environment variable BIDS_HOOK_SECRET
-	// this should be entered as-in in Gitea to configure the webhook
+	// generated fresh on each startup
 	bidsHookSecret []byte
 
 	// the base URL to reach Gitea
@@ -111,8 +113,20 @@ func main() {
 		WriteTimeout:   3 * time.Second,
 		MaxHeaderBytes: 4 << 10,
 	}
+	addr := server.Addr
+	if addr == "" {
+		addr = ":http"
+	}
+	sock, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
 	log.Printf("main: listening on %q", bidsHookUrl)
-	log.Fatal(server.ListenAndServe())
+	err = installWebhook()
+	if err != nil {
+		log.Fatalf("error installing webhook: %v", err)
+	}
+	log.Fatal(server.Serve(sock))
 }
 
 // router checks the host, method and target of the request,
@@ -154,6 +168,130 @@ func router(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Error(w, "404 not found", http.StatusNotFound)
 	return
+}
+
+type Hook struct {
+	ID                  int64             `json:"id"`
+	Type                string            `json:"type"`
+	URL                 string            `json:"-"`
+	Config              map[string]string `json:"config"`
+	Events              []string          `json:"events"`
+	AuthorizationHeader string            `json:"authorization_header"`
+	Active              bool              `json:"active"`
+	IsSystemWebhook     bool              `json:"is_system_webhook"`
+	Updated             time.Time         `json:"updated_at"`
+	Created             time.Time         `json:"created_at"`
+}
+
+// set up the webhook
+func installWebhook() error {
+	url := giteaRootUrl.JoinPath("api", "v1", "admin", "hooks")
+
+	_bidsHookSecret := make([]byte, 32)
+	_, err := rand.Read(_bidsHookSecret)
+	if err != nil {
+		return err
+	}
+	// hex-encode, to avoid any trouble with unusual characters
+	bidsHookSecret = make([]byte, hex.EncodedLen(len(_bidsHookSecret)))
+	hex.Encode(bidsHookSecret, _bidsHookSecret)
+
+	// This is the hook we want to exist
+	// Note: Gitea internally uses a CreateHookOption or a EditHookOption for these
+	//       which are two different subsets of the Hook type. So we're not being 100% correct here.
+	log.Printf("SECERT: %s", string(bidsHookSecret))
+	hook := Hook{
+		Type: "gitea",
+		Config: map[string]string{
+			"content_type": "json",
+			"url":          bidsHookUrl.String(),
+			// notice: we *regenerate* the secret *each time*
+			// it is entirely ephemeral, and thus we must always create/patch the hook
+			"secret": string(bidsHookSecret),
+		},
+		Events:          []string{"push"},
+		Active:          true,
+		IsSystemWebhook: true,
+	}
+
+	hookJSON, err := json.Marshal(hook)
+	if err != nil {
+		return err
+	}
+
+	// Check if the hook already exists
+	req, err := http.NewRequest(http.MethodGet, url.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", fmt.Sprintf("token %s", giteaToken))
+	req.Header.Add("Accept", "application/json")
+	log.Printf("Calling %s %s\n", req.Method, url.String()) // DEBUG
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return errors.New(fmt.Sprintf("got http status code %d", resp.StatusCode))
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	var hooks []Hook
+	err = json.Unmarshal(body, &hooks)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Read this: |%s|\n", body)
+	// search the result for pre-existing webhook
+	found := false
+	var id int64
+	fmt.Printf("hook: %#v\n", hook) // DEBUG
+	for _, _hook := range hooks {
+		fmt.Printf("hook: %#v\n", _hook) // DEBUG
+		if _hook.URL == hook.URL {
+			fmt.Printf("found at id: %#v\n", _hook.ID) // DEBUG
+			found = true
+			id = _hook.ID
+			break
+		}
+	}
+
+	// depending on whether we found, either use POST or PATCH
+	method := http.MethodPost
+	if found {
+		method = http.MethodPatch
+		url = url.JoinPath(fmt.Sprintf("%d", id))
+	}
+	log.Printf("Calling %s %s\n", method, url.String()) // DEBUG
+
+	req, err = http.NewRequest(method, url.String(), bytes.NewReader(hookJSON))
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", fmt.Sprintf("token %s", giteaToken))
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		log.Printf("Bailing\n")
+		return errors.New(fmt.Sprintf("got http status code %d", resp.StatusCode))
+	}
+	body, err = ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Read: |%s|\n", body)
+	defer resp.Body.Close()
+
+	return nil
 }
 
 // postHandler deals with requests that have successfully passed
@@ -439,12 +577,6 @@ func readConfig() {
 	if err != nil {
 		log.Fatalf("error parsing BIDS_HOOK_URL: %v", err)
 	}
-
-	val, ok = os.LookupEnv("BIDS_HOOK_SECRET")
-	if !ok {
-		log.Fatal("missing environment variable BIDS_HOOK_SECRET")
-	}
-	bidsHookSecret = []byte(val)
 
 	val, ok = os.LookupEnv("GITEA_ROOT_URL")
 	if !ok {

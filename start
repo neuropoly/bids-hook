@@ -17,7 +17,6 @@ export GITEA_CUSTOM
 
 # 127.0.0.1 is localhost, and 2845 is 0xB1D
 export BIDS_HOOK_URL='http://127.0.0.1:2845/bids-hook'
-export BIDS_HOOK_SECRET='blabla'
 
 export GITEA_ROOT_URL='http://127.0.0.1:3000'
 export GITEA_TOKEN='69e45fa9cfa75a7497633c6be8dd2347226e2f62'
